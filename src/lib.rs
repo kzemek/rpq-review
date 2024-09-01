@@ -102,8 +102,6 @@ pub mod pq;
 const DB: TableDefinition<&str, &[u8]> = TableDefinition::new("rpq");
 
 /// RPQ hold private items and configuration for the RPQ.
-/// You don't need to interact with the items in this struct directly,
-/// but instead via the implementations attched to the RPQ struct.
 pub struct RPQ<T: Ord + Clone + Send> {
     // options is the configuration for the RPQ
     options: RPQOptions,

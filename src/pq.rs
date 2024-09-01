@@ -14,7 +14,7 @@ mod ftime;
 /// in a queue. Items are stored in a VecDeque and are prioritized based on metadata provided by the user.
 /// Items can be escalated or timed out based on the should_escalate and can_timeout fields.
 pub struct PriorityQueue<T: Ord + Clone + Send> {
-    items: RwLock<VecDeque<Item<T>>>,
+    items: VecDeque<Item<T>>,
     ftime: ftime::CachedTime,
 }
 
@@ -22,18 +22,18 @@ impl<T: Ord + Clone + Send> PriorityQueue<T> {
     /// This function creates a new PriorityQueue.
     pub fn new() -> PriorityQueue<T> {
         PriorityQueue {
-            items: RwLock::new(VecDeque::new()),
+            items: VecDeque::new(),
             ftime: ftime::CachedTime::new(Duration::from_millis(50)),
         }
     }
 
     /// Returns the number of items in this queue
     pub fn len(&self) -> usize {
-        self.items.read().unwrap().len()
+        self.items.len()
     }
 
     /// Adds an item to the queue at the end of the VecDeque
-    pub fn enqueue(&self, item: Item<T>) {
+    pub fn enqueue(&mut self, item: Item<T>) {
         let mut item = item;
 
         // Set the internal fields
@@ -41,23 +41,22 @@ impl<T: Ord + Clone + Send> PriorityQueue<T> {
         item.last_escalation = None;
 
         // Add the item to the queue
-        self.items.write().unwrap().push_back(item);
+        self.items.push_back(item);
     }
 
     /// Removes and returns the item with the highest priority
-    pub fn dequeue(&self) -> Option<Item<T>> {
-        self.items.write().unwrap().pop_front()
+    pub fn dequeue(&mut self) -> Option<Item<T>> {
+        self.items.pop_front()
     }
 
     /// Prioritizes the items in the queue based on the priority, escalation rate, and timeout
     /// Returns a tuple of the number of items removed and the number of items swapped
-    pub fn prioritize(&self) -> Result<(usize, usize), Box<dyn Error>> {
-        let mut items = self.items.write().unwrap();
+    pub fn prioritize(&mut self) -> Result<(usize, usize), Box<dyn Error>> {
         let mut to_remove = Vec::new();
         let mut to_swap = Vec::new();
         let mut was_error = false;
 
-        for (index, item) in items.iter_mut().enumerate() {
+        for (index, item) in self.items.iter_mut().enumerate() {
             // Timeout items that have been in the queue for too long
             if item.can_timeout {
                 if let (Some(timeout), Some(submitted_at)) = (item.timeout, item.submitted_at) {
@@ -120,10 +119,10 @@ impl<T: Ord + Clone + Send> PriorityQueue<T> {
 
         // Perform removals and swaps
         for index in to_remove.iter().rev() {
-            items.remove(*index);
+            self.items.remove(*index);
         }
         for index in to_swap {
-            items.swap(index, index - 1);
+            self.items.swap(index, index - 1);
         }
 
         if was_error {

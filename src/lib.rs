@@ -110,7 +110,7 @@ pub struct RPQ<T: Ord + Clone + Send> {
     // non_empty_buckets is a binary heap of priorities
     non_empty_buckets: bpq::BucketPriorityQueue,
     // buckets is a map of priorities to a binary heap of items
-    buckets: Arc<HashMap<usize, pq::PriorityQueue<T>>>,
+    buckets: Vec<pq::PriorityQueue<T>>,
 
     // items_in_queues is the number of items across all queues
     items_in_queues: AtomicUsize,
@@ -188,7 +188,6 @@ where
     /// Creates a new RPQ with the given options and returns the RPQ and the number of items restored from the disk cache
     pub async fn new(options: RPQOptions) -> Result<(Arc<RPQ<T>>, usize), Box<dyn Error>> {
         // Create base structures
-        let mut buckets = HashMap::new();
         let items_in_queues = AtomicUsize::new(0);
         let sync_handles = Vec::new();
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
@@ -214,9 +213,9 @@ where
         let lazy_disk_cache = options.lazy_disk_cache;
 
         // Create the buckets
-        for i in 0..options.max_priority {
-            buckets.insert(i, pq::PriorityQueue::new());
-        }
+        let buckets = (0..options.max_priority)
+            .map(|_| pq::PriorityQueue::new())
+            .collect();
 
         let disk_cache: Option<Arc<Database>>;
         if disk_cache_enabled {
@@ -231,7 +230,7 @@ where
         let rpq = RPQ {
             options,
             non_empty_buckets: bpq::BucketPriorityQueue::new(),
-            buckets: Arc::new(buckets),
+            buckets,
             items_in_queues,
             disk_cache,
             lazy_disk_writer_sender: Arc::new(lazy_disk_writer_sender),
@@ -321,24 +320,15 @@ where
 
     /// Adds an item to the RPQ and returns an error if one occurs otherwise it returns ()
     pub async fn enqueue(&self, mut item: pq::Item<T>) -> Result<(), Box<dyn Error>> {
-        // Check if the item priority is greater than the bucket count
-        if item.priority >= self.options.max_priority {
-            return Result::Err(Box::<dyn Error>::from(IoError::new(
-                ErrorKind::InvalidInput,
-                "Priority is greater than bucket count",
-            )));
-        }
         let priority = item.priority;
 
         // Get the bucket and enqueue the item
-        let bucket = self.buckets.get(&item.priority);
-
-        if bucket.is_none() {
-            return Result::Err(Box::<dyn Error>::from(IoError::new(
+        let bucket = self.buckets.get(priority).ok_or_else(|| {
+            IoError::new(
                 ErrorKind::InvalidInput,
-                "Bucket does not exist",
-            )));
-        }
+                "Priority is greater than bucket count",
+            )
+        })?;
 
         // If the disk cache is enabled, send the item to the lazy disk writer
         if self.options.disk_cache_enabled {
@@ -376,7 +366,7 @@ where
         }
 
         // Enqueue the item and update
-        bucket.unwrap().enqueue(item);
+        bucket.enqueue(item);
         self.non_empty_buckets.add_bucket(priority);
         Ok(())
     }
@@ -394,16 +384,13 @@ where
         let bucket_id = bucket_id.unwrap();
 
         // Fetch the queue
-        let queue = self.buckets.get(&bucket_id);
-        if queue.is_none() {
-            return Result::Err(Box::<dyn Error>::from(IoError::new(
-                ErrorKind::InvalidInput,
-                "No items in queue",
-            )));
-        }
+        let queue = self
+            .buckets
+            .get(bucket_id)
+            .expect("valid bucket id from non_empty_buckets");
 
         // Fetch the item from the bucket
-        let item = queue.unwrap().dequeue();
+        let item = queue.dequeue();
         if item.is_none() {
             return Result::Err(Box::<dyn Error>::from(IoError::new(
                 ErrorKind::InvalidInput,
@@ -414,7 +401,7 @@ where
         let item = item.unwrap();
 
         // If the bucket is empty, remove it from the non_empty_buckets
-        if queue.unwrap().len() == 0 {
+        if queue.len() == 0 {
             self.non_empty_buckets.remove_bucket(&bucket_id);
         }
 
@@ -443,20 +430,11 @@ where
     /// Prioritize reorders the items in each bucket based on the values spesified in the item.
     /// It returns a tuple with the number of items removed and the number of items escalated or and error if one occurs.
     pub async fn prioritize(&self) -> Result<(usize, usize), Box<dyn Error>> {
-        let mut removed: usize = 0;
-        let mut escalated: usize = 0;
+        let (removed, escalated) = self.buckets.iter().try_fold((0, 0), |acc, active_bucket| {
+            let (removed, escalated) = active_bucket.prioritize()?;
+            Ok::<(usize, usize), Box<dyn Error>>((acc.0 + removed, acc.1 + escalated))
+        })?;
 
-        for (_, active_bucket) in self.buckets.iter() {
-            match active_bucket.prioritize() {
-                Ok((r, e)) => {
-                    removed += r;
-                    escalated += e;
-                }
-                Err(err) => {
-                    return Err(Box::<dyn Error>::from(err));
-                }
-            }
-        }
         self.items_in_queues.fetch_sub(removed, Ordering::SeqCst);
         Ok((removed, escalated))
     }
@@ -728,11 +706,7 @@ where
 
     /// Returns the number of items in the RPQ across all buckets
     pub async fn len(&self) -> usize {
-        let mut len = 0 as usize;
-        for (_, active_bucket) in self.buckets.iter() {
-            len += active_bucket.len();
-        }
-        len
+        self.buckets.iter().map(|bucket| bucket.len()).sum()
     }
 
     /// Returns the number of active buckets in the RPQ (buckets with items)

@@ -35,10 +35,10 @@
 //! In many ways, RPQ slighty compromises the performance of a traditional priority queue in order to provide
 //! a variety of features that are useful when absorbing distributed load from many down or upstream services.
 //! It employs a fairly novel techinique that allows it to lazily write and delete items from a disk cache while
-//! still maintaining data in memory. This basically means that a object can be added to the queue and then removed
+//! still maintaining data in memory. This basically means that an object can be added to the queue and then removed
 //! without the disk commit ever blocking the processes sending or reciving the data. In the case that a batch of data
 //! has already been removed from the queue before it is written to disk, the data is simply discarded. This
-//! dramaically reduces the amount of time spent doing disk commits and allows for much better performance in the
+//! dramatically reduces the amount of time spent doing disk commits and allows for much better performance in the
 //! case that you need disk caching and still want to maintain a high peak throughput.
 //!
 //! ```text
